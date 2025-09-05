@@ -16,6 +16,8 @@ export default function Page() {
   const [name, setName] = useState("");
   const [userId, setUserId] = useState<string>("");
   const [isActive, setIsActive] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
+  const [queuePosition, setQueuePosition] = useState(0);
 
   // Initialize user ID
   useEffect(() => {
@@ -103,12 +105,106 @@ export default function Page() {
     };
   }, [userId, role, isActive]);
 
-  const goLive = () => {
+  // Fetch queue count for hosts
+  useEffect(() => {
+    if (role !== "host") return;
+
+    const fetchQueueCount = async () => {
+      const { count } = await sb
+        .from("queue")
+        .select("*", { count: 'exact', head: true })
+        .eq("status", "queued");
+      
+      setQueueCount(count || 0);
+    };
+
+    // Subscribe to queue changes to update count in real-time
+    const subscription = sb
+      .channel('queue-count-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'queue'
+        },
+        () => {
+          fetchQueueCount();
+        }
+      )
+      .subscribe();
+
+    fetchQueueCount();
+    const interval = setInterval(fetchQueueCount, 5000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(interval);
+    };
+  }, [role]);
+
+  // Fetch queue position for fans
+  useEffect(() => {
+    if (role !== "fan" || !userId) return;
+
+    const fetchQueuePosition = async () => {
+      // First get the current user's enq_at timestamp
+      const { data: currentUser } = await sb
+        .from("queue")
+        .select("enq_at")
+        .eq("user_id", userId)
+        .single();
+
+      if (currentUser) {
+        // Count how many people joined before this user and are still waiting
+        const { count } = await sb
+          .from("queue")
+          .select("*", { count: 'exact', head: true })
+          .eq("status", "queued")
+          .lt("enq_at", currentUser.enq_at);
+
+        setQueuePosition(count || 0);
+      }
+    };
+
+    // Subscribe to queue changes to update position in real-time
+    const subscription = sb
+      .channel('queue-position-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'queue'
+        },
+        () => {
+          fetchQueuePosition();
+        }
+      )
+      .subscribe();
+
+    fetchQueuePosition();
+    const interval = setInterval(fetchQueuePosition, 3000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(interval);
+    };
+  }, [role, userId]);
+
+  const goLive = async () => {
     if (!userId) {
       alert("Please wait for initialization to complete");
       return;
     }
     const hostName = prompt("Your name:") || "Host";
+    
+    // Clear all existing queue entries by setting them to "done"
+    await sb
+      .from("queue")
+      .update({ status: "done" })
+      .neq("status", "done");
+    
     setRole("host");
     setName(hostName);
     setIsActive(true);
@@ -165,7 +261,7 @@ export default function Page() {
       <div>
         <div style={{background:"#333", color:"white", padding:"10px"}}>
           {role === "host" ? `🔴 ${name} - Live` : "💬 Your turn!"}
-          {role === "host" && <button onClick={nextFan} style={{float:"right", marginLeft:"10px"}}>Next</button>}
+          {role === "host" && <button onClick={nextFan} style={{float:"right", marginLeft:"10px"}}>Next ({queueCount})</button>}
           {role === "fan" && <button onClick={leaveFan} style={{float:"right", marginLeft:"10px", background:"#666"}}>Leave</button>}
         </div>
         <iframe src="https://beancan.daily.co/iQjfQ32MxYYT2rOsmZ0v" 
@@ -179,7 +275,7 @@ export default function Page() {
       <h1>Friendsly</h1>
       <button onClick={goLive} style={{padding:"20px", margin:"10px", background:"red", color:"white", border:"none"}}>Go Live</button>
       <button onClick={joinQueue} style={{padding:"20px", margin:"10px", background:"green", color:"white", border:"none"}}>Join Queue</button>
-      {role === "fan" && name && <p>Waiting in queue...</p>}
+      {role === "fan" && name && <p>{queuePosition} people in front of you</p>}
     </div>
   );
 }
