@@ -1,5 +1,7 @@
 import React from "react";
 
+export const metadata = { title: 'Friendsly' };
+
 export default function RootLayout({
   children,
 }: {
