@@ -2,16 +2,13 @@
 import React, { useState, useEffect } from "react";
 import { sb } from "./supabase";
 
-// Generate a simple UUID for this session
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
 export default function Page() {
+  // Auth states
+  const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  
+  // Existing states
   const [role, setRole] = useState("");
   const [name, setName] = useState("");
   const [userId, setUserId] = useState<string>("");
@@ -19,9 +16,46 @@ export default function Page() {
   const [queueCount, setQueueCount] = useState(0);
   const [queuePosition, setQueuePosition] = useState(0);
 
-  // Initialize user ID
+  // Auth form states
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [selectedRole, setSelectedRole] = useState<"creator" | "fan">("fan");
+  const [isLogin, setIsLogin] = useState(true);
+
+  // Initialize auth
   useEffect(() => {
-    setUserId(generateUUID());
+    const getSession = async () => {
+      const { data: { session } } = await sb.auth.getSession();
+      if (session?.user) {
+        setUser(session.user);
+        const role = session.user.user_metadata?.role || "fan";
+        setUserRole(role);
+        setName(session.user.user_metadata?.name || session.user.email?.split('@')[0] || "User");
+        setUserId(session.user.id);
+      }
+      setLoading(false);
+    };
+
+    getSession();
+
+    const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        const role = session.user.user_metadata?.role || "fan";
+        setUserRole(role);
+        setName(session.user.user_metadata?.name || session.user.email?.split('@')[0] || "User");
+        setUserId(session.user.id);
+      } else {
+        setUser(null);
+        setUserRole("");
+        setRole("");
+        setName("");
+        setUserId("");
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   // Real-time subscription for fans to watch their queue status
@@ -49,13 +83,11 @@ export default function Page() {
               // Fan was kicked out or finished
               setIsActive(false);
               setRole("");
-              setName("");
             }
           } else if (payload.eventType === 'DELETE') {
             // Fan was removed from queue
             setIsActive(false);
             setRole("");
-            setName("");
           }
         }
       )
@@ -70,7 +102,6 @@ export default function Page() {
         setIsActive(false);
         if (role === "fan") {
           setRole("");
-          setName("");
         }
       }
     };
@@ -192,12 +223,44 @@ export default function Page() {
     };
   }, [role, userId]);
 
+  // Auth functions
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      if (isLogin) {
+        const { error } = await sb.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await sb.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              name: displayName,
+              role: selectedRole
+            }
+          }
+        });
+        if (error) throw error;
+        alert("Check your email for verification!");
+      }
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const goLive = async () => {
-    if (!userId) {
-      alert("Please wait for initialization to complete");
+    if (userRole !== "creator") {
+      alert("Only creators can go live!");
       return;
     }
-    const hostName = prompt("Your name:") || "Host";
     
     // Clear all existing queue entries by setting them to "done"
     await sb
@@ -206,19 +269,17 @@ export default function Page() {
       .neq("status", "done");
     
     setRole("host");
-    setName(hostName);
     setIsActive(true);
   };
 
   const joinQueue = async () => {
-    if (!userId) {
-      alert("Please wait for initialization to complete");
+    if (userRole !== "fan") {
+      alert("Only fans can join the queue!");
       return;
     }
-    const fanName = prompt("Your name:") || "Fan";
+    
     setRole("fan");
-    setName(fanName);
-    const { error } = await sb.from("queue").insert({ user_id: userId, name: fanName });
+    const { error } = await sb.from("queue").insert({ user_id: userId, name });
     if (error) {
       console.error("Failed to join queue:", error);
       alert("Failed to join queue. Please try again.");
@@ -252,10 +313,98 @@ export default function Page() {
       await sb.rpc("promote_next");
       setIsActive(false);
       setRole("");
-      setName("");
     }
   };
 
+  // Loading state
+  if (loading) {
+    return (
+      <div style={{padding:"50px", textAlign:"center"}}>
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  // Auth form
+  if (!user) {
+    return (
+      <div style={{maxWidth:"400px", margin:"50px auto", padding:"20px"}}>
+        <h1>Friendsly</h1>
+        <h2>{isLogin ? "Sign In" : "Create Account"}</h2>
+        
+        <form onSubmit={handleAuth}>
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            style={{width:"100%", padding:"10px", margin:"5px 0", boxSizing:"border-box"}}
+          />
+          
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            style={{width:"100%", padding:"10px", margin:"5px 0", boxSizing:"border-box"}}
+          />
+
+          {!isLogin && (
+            <>
+              <input
+                type="text"
+                placeholder="Your Name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                required
+                style={{width:"100%", padding:"10px", margin:"5px 0", boxSizing:"border-box"}}
+              />
+              
+              <div style={{margin:"10px 0"}}>
+                <label style={{marginRight:"20px"}}>
+                  <input
+                    type="radio"
+                    value="fan"
+                    checked={selectedRole === 'fan'}
+                    onChange={(e) => setSelectedRole(e.target.value as 'fan')}
+                  />
+                  Fan
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    value="creator"
+                    checked={selectedRole === 'creator'}
+                    onChange={(e) => setSelectedRole(e.target.value as 'creator')}
+                  />
+                  Creator
+                </label>
+              </div>
+            </>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            style={{width:"100%", padding:"12px", background:"#007bff", color:"white", border:"none", margin:"10px 0", cursor: loading ? "not-allowed" : "pointer"}}
+          >
+            {loading ? "Loading..." : (isLogin ? "Sign In" : "Create Account")}
+          </button>
+        </form>
+
+        <button
+          onClick={() => setIsLogin(!isLogin)}
+          style={{background:"none", border:"none", color:"#007bff", cursor:"pointer"}}
+        >
+          {isLogin ? "Need an account? Sign Up" : "Have an account? Sign In"}
+        </button>
+      </div>
+    );
+  }
+
+  // Active session UI
   if (isActive) {
     return (
       <div>
@@ -263,6 +412,7 @@ export default function Page() {
           {role === "host" ? `🔴 ${name} - Live` : "💬 Your turn!"}
           {role === "host" && <button onClick={nextFan} style={{float:"right", marginLeft:"10px"}}>Next ({queueCount})</button>}
           {role === "fan" && <button onClick={leaveFan} style={{float:"right", marginLeft:"10px", background:"#666"}}>Leave</button>}
+          <button onClick={() => sb.auth.signOut()} style={{float:"right", background:"#666", marginLeft:"10px"}}>Sign Out</button>
         </div>
         <iframe src="https://beancan.daily.co/iQjfQ32MxYYT2rOsmZ0v" 
                 allow="camera; microphone" style={{width:"100%",height:"90vh",border:0}} />
@@ -270,12 +420,31 @@ export default function Page() {
     );
   }
 
+  // Main dashboard
   return (
     <div style={{padding:"50px", textAlign:"center"}}>
+      <div style={{position:"absolute", top:"10px", right:"10px"}}>
+        <span style={{marginRight:"10px"}}>{name} ({userRole})</span>
+        <button onClick={() => sb.auth.signOut()} style={{padding:"5px 10px", background:"#666", color:"white", border:"none"}}>
+          Sign Out
+        </button>
+      </div>
+      
       <h1>Friendsly</h1>
-      <button onClick={goLive} style={{padding:"20px", margin:"10px", background:"red", color:"white", border:"none"}}>Go Live</button>
-      <button onClick={joinQueue} style={{padding:"20px", margin:"10px", background:"green", color:"white", border:"none"}}>Join Queue</button>
-      {role === "fan" && name && <p>{queuePosition} people in front of you</p>}
+      
+      {userRole === "creator" && (
+        <button onClick={goLive} style={{padding:"20px", margin:"10px", background:"red", color:"white", border:"none"}}>
+          Go Live
+        </button>
+      )}
+      
+      {userRole === "fan" && (
+        <button onClick={joinQueue} style={{padding:"20px", margin:"10px", background:"green", color:"white", border:"none"}}>
+          Join Queue
+        </button>
+      )}
+      
+      {role === "fan" && <p>{queuePosition} people in front of you</p>}
     </div>
   );
 }
